@@ -1,0 +1,337 @@
+---
+title: "Assignment 1 - Data set selection and initial Processing"
+output: html_notebook
+bibliography: references.bib
+csl: apa.csl
+---
+
+```{r}
+setwd("/home/rstudio/projects")
+```
+
+The APA Citation Style Language is retreived from the [Zotero Style Repository](https://www.zotero.org/styles/apa). The BibTeX reference file is available [here](https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/references.bib).
+```{r}
+if (!file.exists('apa.csl')){
+  download.file("https://www.zotero.org/styles/apa", "/home/rstudio/projects")
+}
+```
+
+Code in this assignment is referenced from lecture 4 and lecture 5 of BCB420 2022 (Isserlin, 2022).
+
+The packages BiocManager (Morgan, 2021), GEOmetadb (Zhu et al., 2008), and edgeR (Chen et al., 2016; McCarthy et al., 2012; Robinson et al., 2010) are used in the code for this assignment.
+```{r message=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("GEOmetadb", quietly = TRUE)){
+  BiocManager::install("GEOmetadb")
+}
+
+if (!requireNamespace("edgeR", quietly = TRUE)){
+  BiocManager::install("edgeR")
+}
+```
+```{r message=FALSE}
+library(GEOmetadb)
+library(edgeR)
+```
+
+### Retreiving and Analyzing the Dataset
+In the research article associated with the chosen dataset, Huangyang et al. hypothesized that the loss of expression of the enzyme fructose-1,6-bisphosphatase 2 (FBP2) is a cause of soft tissue sarcomas (2020). In the experiment producing this RNA-seq dataset, the human liposarcoma cells were treated with doxycycline in order to induce FBP2 expression and the control group was vehicle treated. This dataset is interesting to me because it provides information on the transcriptome of cancer causing cells and also suggests a possible method for treating sarcomas by introducing FBP2 expression (Huangyang et al., 2020).
+
+The dataset is retrieved using the GEOquery package (Davis & Meltzer, 2007).
+```{r}
+# Retreive the dataset.
+sfiles = getGEOSuppFiles('GSE137755')
+fnames = rownames(sfiles)
+FBP2_exp = read.delim(fnames, header=TRUE, check.names = FALSE)
+```
+
+```{r}
+# Create table of counts associated with each ensembl ID, 
+# and sort the table to show the highest counts.
+summarized_gene_counts <- sort(table(FBP2_exp$GeneID), decreasing = TRUE)
+
+knitr::kable(summarized_gene_counts[which(summarized_gene_counts>=1)[1:3]],
+             format="html")
+```
+
+
+The table indicates that each of the the ensembl IDs are unique and do not have replicates. These ensembl IDs have version numbers associated with them. If the version numbers were removed, there might be duplicates.
+
+```{r}
+# Create dataframe of genes without version numbers.
+genesNoVer <- unlist(lapply(FBP2_exp$GeneID,
+                            FUN=function(x){
+                              unlist(strsplit(x, split = "\\."))[c(1)]}))
+
+# Create dataframe of genes without version numbers without replicates.
+genesNoVerUnique <- unlist(unique(lapply(FBP2_exp$GeneID,
+                                         FUN=function(x){
+                                           unlist(strsplit(x,
+                                                    split = "\\."))[c(1)]})))
+
+# Find the number of genes which are not unique.
+length(genesNoVer) - length(genesNoVerUnique)
+
+# Create table to view the amount of counts each 
+# ensembl ID without version numbers has.
+gene_counts_NoVer <- sort(table(genesNoVer), decreasing = TRUE)
+
+knitr::kable(gene_counts_NoVer[which(gene_counts_NoVer>1)][1:5], format="html")
+                      
+```
+
+There are 45 ensembl IDs which are not unique, but they have different version numbers. None of these genes have more than one repetition. These will not be filtered and will remain in the dataset.
+
+The low expression values in the dataset can be filtered out based on whether their expression is less than one count per million within the smallest sample group (Anders et al., 2013). The smallest sample group is the protein expressing group containing four columns.
+```{r}
+cpms = cpm(FBP2_exp[,2:10])
+rownames(cpms) <- FBP2_exp[,1]
+keep = rowSums(cpms >1) >=4
+FBP2_exp_filtered = FBP2_exp[keep,]
+```
+
+The dataset contains 10 rows of which 4 are the cells expressing FBP2 and 5 are the control groups. 
+```{r}
+knitr::kable(FBP2_exp[1,])
+```
+
+The following code produces a dataframe which will help categorize the columns of the dataset. 
+```{r}
+# Separate the letter associated with the control or protein expressing group
+# from the group number.
+sampleGroups <- data.frame(lapply(colnames(FBP2_exp)[2:10], 
+ FUN=function(x){unlist(strsplit(x, split = ""))}))
+colnames(sampleGroups) <- colnames(FBP2_exp)[2:10]
+rownames(sampleGroups) <- c("group","number")
+# Create data frame containing a column for the groups and 
+# a column for the numbers, and rows representing the columns of the dataset.
+sampleGroups <- data.frame(t(sampleGroups))
+```
+
+
+### Normalization and Filtering
+The filtered data can be represented in a box plot.
+```{r}
+#Box plot code is referenced from lecture 4 of BCB420 (Isserlin, 2022).
+data2plot <- log2(cpm(FBP2_exp_filtered[,2:10]))
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+ las = 2, cex = 0.5, cex.lab = 0.5,
+ cex.axis = 0.5, main = "Box Plot of Filtered FBP2 Dataset")
+abline(h = median(apply(data2plot, 2, median)), 
+ col = "green", lwd = 0.6, lty = "dashed")
+
+```
+The medians of all the separate sample groups are very closely aligned. The box plots do not show any significant outliers. A Trimmed Mean of M-values (TMM) approach will be used to normalize this data (Isserlin, 2022). The TMM approach is applicable to this dataset since the dataset is separated into two groups of samples (Robinson & Oshlack, 2010).
+
+```{r}
+# Create matrix from the filtered dataframe.
+filtered_data_matrix <- as.matrix(FBP2_exp_filtered[,2:10])
+# Version numbers are removed for future steps in identifier mapping.
+rownames(filtered_data_matrix) <- 
+  unlist(lapply(FBP2_exp_filtered$GeneID,
+                FUN=function(x){unlist(strsplit(x, split = "\\."))[c(1)]}))
+
+# Specify the experimental group and the control group to be used.
+d = DGEList(counts=filtered_data_matrix, group=sampleGroups$group)
+
+# Normalize data by calculating scaling factor with edgeR 
+# (Chen et al., 2016; McCarthy et al., 2012; Robinson et al., 2010).
+d = calcNormFactors(d)
+
+normalized_counts <- cpm(d)
+```
+
+```{r}
+#Box plot code is referenced from lecture 4 of BCB420 (Isserlin, 2022).
+data2plot <- log2(normalized_counts)
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+ las = 2, cex = 0.5, cex.lab = 0.5,
+ cex.axis = 0.5, main = "Box Plot of Filtered and Normalized FBP2 Dataset")
+abline(h = median(apply(data2plot, 2, median)), 
+ col = "green", lwd = 0.6, lty = "dashed")
+```
+The boxplot of the normalized data does not show a significant visual difference from the box plot of the filtered data. This indicates that the data has already been initially evenly aligned and thus applying normalization has not significantly altered the data. 
+
+
+```{r}
+# Create MDS plot of the normalized data.
+plotMDS(d, labels=rownames(sampleGroups), 
+        # Separate colours by group.
+        col = c("darkgreen","blue")[factor(sampleGroups$group)])
+```
+The MDS plot shows the protein expressing group in green and the control group in blue. The plot shows that the two groups have differences in their expression.
+
+### Mapping to HUGO symbols
+
+The biomaRt package will be used to retrieve the HUGO symbols associated with the ensembl IDs provided in the dataset (Durinck et al., 2005, 2009).
+```{r message=FALSE}
+if (!requireNamespace("biomaRt", quietly = TRUE)){
+  BiocManager::install("biomaRt")
+}
+```
+```{r message=FALSE}
+library(biomaRt)
+```
+```{r}
+ensembl <- useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+```
+
+```{r}
+conversion_stash <- "FBP2_id_conversion.rds"
+if(file.exists(conversion_stash)){
+ FBP2_id_conversion <- readRDS(conversion_stash)
+} else {
+  # Retrieve HUGO symbols associated with the ensembl IDs.
+ FBP2_id_conversion <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol"),
+                             filters = c("ensembl_gene_id"),
+                             values = unlist(lapply(FBP2_exp_filtered$GeneID, 
+                                      FUN=function(x){
+                                      unlist(strsplit(x,
+                                                      split = "\\."))[c(1)]})),
+                             mart = ensembl)
+ saveRDS(FBP2_id_conversion, conversion_stash)
+}
+```
+
+```{r}
+# Add HUGO symbols to the dataset.
+normalized_counts_annot <- merge(FBP2_id_conversion,
+                                 normalized_counts,
+                                 by.x = 1,
+                                 by.y = 0,
+                                 all.y=TRUE)
+knitr::kable(normalized_counts_annot[1:5,1:5],type = "html")
+```
+
+```{r}
+# Retrieve ensembl IDs that do not have HUGO symbols assigned.
+ensembl_id_missing_gene <- 
+  normalized_counts_annot$ensembl_gene_id[
+    which(is.na(normalized_counts_annot$hgnc_symbol))]
+length(ensembl_id_missing_gene)
+knitr::kable(normalized_counts_annot[which(is.na(
+  normalized_counts_annot$hgnc_symbol)),][1:10, 1:7], type = "html")
+```
+There are 44 ensembl IDs for which there is no HUGO symbol specified. We would like to have more information on these genes.
+```{r}
+oldEnsembl <- useMart("ensembl", host = "http://grch37.ensembl.org")
+oldEnsembl = useDataset("hsapiens_gene_ensembl",mart=oldEnsembl)
+```
+```{r}
+oldDatasets <- listDatasets(oldEnsembl)
+knitr::kable(oldDatasets,format = "html")
+datasets <- listDatasets(ensembl)
+knitr::kable(datasets[grep(datasets$dataset,
+ pattern = "sapiens"),],format = "html")
+```
+
+
+The archived mart provides the human GRCh37.p13 dataset (Howe et al., 2020). This older dataset may provide information on the ensembl IDs with missing HUGO symbols. The biomaRt package will be used to retrieve the gene names associated with the ensembl IDs provided in the dataset (Durinck et al., 2005, 2009).
+
+```{r}
+# Find the gene names associated with the ensembl IDs with missing symbols. 
+missingSymbols <- getBM(attributes = c("ensembl_gene_id","external_gene_name"),
+                        filters = c("ensembl_gene_id"),
+                        values = ensembl_id_missing_gene,
+                        mart = oldEnsembl)
+knitr::kable(missingSymbols[1:10,], format = "html")
+```
+
+
+The gene names of most of the ensembl IDs of the missing HUGO symbols were able to be retrieved by searching with the archived mart. 
+
+
+```{r}
+# Create dataframe of the unique HUGO symbols.
+HugoUnique <- data.frame(unique(
+  normalized_counts_annot$hgnc_symbol[
+    which(!is.na(normalized_counts_annot$hgnc_symbol))]))
+# Find difference between all symbols and unique symbols.
+length(normalized_counts_annot$hgnc_symbol[
+  which(!is.na(normalized_counts_annot$hgnc_symbol))])[1]-dim(HugoUnique)[1]
+```
+There are 392 HUGO symbol repeats out of the ensembl IDs which map to HUGO symbols. These repeats can be further identified.
+
+```{r}
+# Create table of counts associated with the HUGO symbols.
+symbol_counts <-  sort(table(normalized_counts_annot$hgnc_symbol[
+  which(!is.na(normalized_counts_annot$hgnc_symbol))]), decreasing = TRUE)
+knitr::kable(symbol_counts[1:5], format="html")
+```
+393 of the HUGO symbols are actually blank. These will not be removed since they have an ensembl ID by which they can be identified. These genes may also be identifiable by using the archived mart.
+
+```{r}
+# Retrieve ensembl IDs associated with blank HUGO symbols.
+ensembl_id_blank_gene <- normalized_counts_annot$ensembl_gene_id[
+  which(normalized_counts_annot$hgnc_symbol == "")]
+
+blankSymbols <- getBM(attributes = c("ensembl_gene_id","external_gene_name"),
+                        filters = c("ensembl_gene_id"),
+                        values = ensembl_id_blank_gene,
+                        mart = oldEnsembl)
+knitr::kable(blankSymbols[1:10,], format = "html")
+```
+The gene names for the missing HUGO symbols can be stored in a dataframe.
+```{r}
+total_missing_symbols <- rbind(missingSymbols, blankSymbols)
+```
+
+Gene names from the archived mart can be added to all the ensembl IDs as a new column. 
+
+```{r}
+conversion_stash2 <- "FBP2_name_conversion.rds"
+if(file.exists(conversion_stash2)){
+ FBP2_name_conversion <- readRDS(conversion_stash2)
+} else {
+ FBP2_name_conversion <- getBM(attributes = c("ensembl_gene_id",
+                                              "external_gene_name"),
+                        filters = c("ensembl_gene_id"),
+                        values = normalized_counts_annot$ensembl_gene_id,
+                        mart = oldEnsembl)
+ saveRDS(FBP2_name_conversion, conversion_stash)
+}
+
+final_normalized_counts_annot <- merge(FBP2_name_conversion,
+                                       normalized_counts_annot)
+knitr::kable(final_normalized_counts_annot[3300:3304,],type = "html")
+```
+
+
+The may be ensembl IDs which map to more than one HUGO symbol.
+```{r}
+x <- vector()
+# for each symbol assigned, 
+for (i in normalized_counts_annot$hgnc_symbol) {
+  # check if there is more than one symbol.
+  if (length(i) > 1){
+    x <- append(x, i)
+  }
+}
+c(x)
+```
+The dataframe does not contain ensembl IDs for which there are more than one HUGO symbol assigned.
+
+
+### Final Coverage
+```{r}
+dim(FBP2_exp)[1] - dim(normalized_counts_annot)[1]
+
+nrow(normalized_counts_annot) - length(total_missing_symbols$ensembl_gene_id)
+```
+A total of 45929 genes have been removed from the initial dataset. There are 12005 genes for which HUGO symbols have been retrieved.
+
+The finalized dataset containing gene names can be saved for future use.
+```{r}
+saveRDS(final_normalized_counts_annot, "final_normalized_counts_annot.rds")
+```
+
+
+### References
+
+---
+nocite: '@*'
+---
