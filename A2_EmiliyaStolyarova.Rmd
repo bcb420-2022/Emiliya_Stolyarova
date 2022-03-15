@@ -1,0 +1,402 @@
+---
+title: "Assignment 2: Differential Gene Expression and Thresholded Over-Representation Analysis of RNA-sequencing Dataset"
+output: 
+  html_notebook:
+    toc: true
+    toc_depth: 2
+    fig_caption: yes
+bibliography: Assignment2references.bib
+csl: apa.csl
+---
+
+Emiliya Stolyarova
+
+[Journal entry for Assignment 2](https://github.com/bcb420-2022/Emiliya_Stolyarova/wiki/Journal-Entry:-Assignment-2)
+
+The APA Citation Style Language is retrieved from the [Zotero Style Repository](https://www.zotero.org/styles/apa). The BibTeX reference file is available [here](https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/Assignment2Folder/Assignment2references.bib).
+```{r message=FALSE}
+if (!file.exists('Assignment2references.bib')){
+bib <- read.delim("https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/Assignment2Folder/Assignment2references.bib")
+
+write.table(x=bib,
+            file=file.path("Assignment2references.bib"),
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+}
+```
+
+Packages used are BiocManager [@BiocManager], edgeR [@edgeR1; @edgeR2; @edgeR3], ComplexHeatmap [@heatmap], circlize [@circlize], limma [@limma], and gprofiler2 [@gprofiler2].
+
+```{r message=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("edgeR", quietly = TRUE)){
+  BiocManager::install("edgeR")
+}
+
+if (!requireNamespace("limma", quietly = TRUE)){
+  BiocManager::install("limma")
+}
+
+if (!requireNamespace("ComplexHeatmap", quietly = TRUE)){
+  BiocManager::install("ComplexHeatmap")
+}
+
+if (!requireNamespace("circlize", quietly = TRUE)){
+  install.packages("circlize")
+}
+
+if (!requireNamespace("gprofiler2", quietly = TRUE)){
+  install.packages("gprofiler2")
+}
+```
+
+
+## Introduction
+
+In the article titled "Fructose-1,6-Bisphosphatase 2 Inhibits Sarcoma Progression by Restraining Mitochondrial Biogenesis", Huangyang et al. hypothesized that the Fructose-1,6-Bisphosphatase 2 (FBP2) protein has low expression in soft tissue sarcomas, and thus that the expression of this protein is likely to prevent sarcoma cancers [-@HUANGYANG2020174]. The authors of the article have performed an RNA-sequencing analysis on liposarcoma cells with the induced expression of FBP2 [@HUANGYANG2020174]. The dataset has the GSE identifier GSE137755. The data from this dataset has been filtered [@anders2013count], and has been normalized using the Trimmed Mean of M-values (TMM) approach [@robinson2010scaling]. The data from the dataset is displayed in Table 1. The data is separated into a vehicle treated control group and a FBP2 protein expressing group [@HUANGYANG2020174]. The control group contains five samples and the protein expressing group contains four samples. Each gene is identified by an ensembl ID, and HGNC symbols have been assigned to the genes. 
+
+```{r message=FALSE}
+# Retrieve "normalized_count_annot" from Assignment 1.
+normalized_count_data <- read.delim("https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/Assignment2Folder/normalized_count_data.txt", sep = " ")
+```
+
+```{r}
+knitr::kable(normalized_count_data[1:3,],
+             caption = "Table 1: RNA-sequencing Dataset of Liposarcoma Cells with the Induced Expression of FBP2.",
+             type="html")
+```
+Table 1: RNA-sequencing Dataset of Liposarcoma Cells with the Induced Expression of FBP2. The table displays the first three rows of the dataset developed by Huangyang et al. using RNA-sequencing [-@HUANGYANG2020174]. The dataset has been normalized and filtered, and HGNC symbols have been added.
+
+
+## Differentiation gene expression
+
+The MDS plot of the normalized dataset demonstrates that differences in gene expression values between the samples can be categorized by the control groups and the FBP2 protein expressing groups (Figure 1). The MDS plot is created with the limma package [@limma].
+```{r message=FALSE}
+library(limma)
+```
+```{r}
+data_matrix <- 
+  normalized_count_data[,3:ncol(normalized_count_data)]
+rownames(data_matrix) <- 
+  normalized_count_data$ensembl_gene_id
+colnames(data_matrix) <- 
+  colnames(normalized_count_data[,3:ncol(normalized_count_data)])
+```
+```{r}
+# Define sample groups
+sampleGroups <- data.frame(lapply(colnames(normalized_count_data)[3:11], 
+ FUN=function(x){unlist(strsplit(x, split = ""))}))
+colnames(sampleGroups) <- colnames(normalized_count_data)[3:11]
+rownames(sampleGroups) <- c("group","number")
+
+sampleGroups <- data.frame(t(sampleGroups))
+```
+```{r}
+# Create MDS plot with colours defined by groups.
+limma::plotMDS(data_matrix,
+ col = rep(c("darkgreen","blue"))[factor(sampleGroups$group)],
+ main = "Figure 1: MDS plot of Dataset")
+legend(-145, 51, legend=c("FBP2 expressing", "Control"),
+       col=c("darkgreen","blue"), pch = 16, cex=0.8)
+```
+Figure 1: MDS plot of Dataset. The sample groups of the liposarcoma cells with the induced expression of FBP2 are labeled in dark green, and the control group samples are indicated in blue. The distances between samples on the plot equates to the log2 fold changes of gene expression between the samples [@limma].
+
+Since the MDS plot shows that gene expression can be categorized by the control groups and protein expressing groups, the model representing the dataset should account for these two groups. Though the pairs of sample numbers do not appear to have a significant correlation on the MDS plot, they may have an effect on expression differences and thus they can be included in the model. The code below creates the model matrix. The following code is refferenced from lecture 6 of BCB420 [@lecture6].
+```{r}
+# Create model.
+
+# It is the protein expressing group which needs to be defined as "1".
+# This needs to be specified manually.
+model_groups <- c("1", "1", "1", "1", "0", "0", "0", "0", "0")
+
+model_expression <- model.matrix(
+ ~ sampleGroups$number + model_groups)
+```
+
+The edgeR package will be used for analyzing differential
+expression of the dataset [@edgeR1; @edgeR2; @edgeR3].
+```{r message=FALSE}
+library(edgeR)
+```
+```{r}
+normalized_data_matrix <- as.matrix(normalized_count_data[,3:11])
+rownames(normalized_data_matrix) <- normalized_count_data$ensembl_gene_id
+# Create edgeR object using previously defined control group and protein expressing group.
+d = DGEList(counts=normalized_data_matrix, group=sampleGroups$group)
+```
+
+The quasi-liklihood method will be used to calculate differential expression since this method is well designed for RNA-seq data [@quasi].
+```{r}
+# Estimate the dispersion using the previously created model
+d <- estimateDisp(d, model_expression)
+# Perform the quasi-likelihood test with the model
+fit <- glmQLFit(d, model_expression)
+# The coefficient is defined as the control group and protein expressing group
+qlf.pos_vs_neg <- glmQLFTest(fit, coef='model_groups1')
+
+# Sort the results by p-value
+qlf_output_hits <- topTags(qlf.pos_vs_neg, 
+                           sort.by = "PValue",
+                           n = nrow(normalized_data_matrix))
+
+knitr::kable(qlf_output_hits[1:3,]$table, type="html", caption = "Table 2: Table of Top Calculated Differentialy Expressed Values of Dataset")
+```
+Table 2: Table of Top Calculated Differentialy Expressed Values of Dataset. Differential expression was calculated with the quasi-liklihood method [@quasi], with the edgeR package [@edgeR1; @edgeR2; @edgeR3].
+
+The following code shows that 967 of the genes from the quasi-likelihood test have a p-value less than 0.05 and thus pass the threshold. A p-value of 0.05 is used as the threshold since it indicates that these genes have differential expression values that have a 95% probability or more to not be due to random chance. Since these genes are statistically significant, they can be used to analyze the dataset.
+```{r}
+length(which(qlf_output_hits$table$PValue < 0.05))
+```
+
+The p-values have been corrected with the Benjamni - Hochberg multiple hypothesis correction method. This method is useful to use since it is an effective way or lowering the probability that the expression of a gene will appear significant by chance [@BH]. There are 276 genes which have passed the correction.
+```{r}
+length(which(qlf_output_hits$table$FDR < 0.05))
+```
+The following Volcano plot shows genes which have passed the threshold p-value in either blue or red. Genes which are upregulated are shown in red, and genes which are dowregulated are shown in blue (Figure 2). The FBP2 gene has been highlighted with a green triangle. This is the gene for which the expression was induced in the experiment [@HUANGYANG2020174]. Therefore, it has been significantly upregulated. In their paper, Huangyang et al. have determined that the induced expression of FBP2 in liposarcoma cells significantly lowers mitochondrial biogenesis [-@HUANGYANG2020174]. One of the mitochondrial genes mentioned in the paper is MT-CO1 [@HUANGYANG2020174]. The mitochondrial gene MT-CO1 has also been highlighted with a green triangle on the Volcano plot, and it is indicated to be downregulated.
+```{r}
+ensembl_of_interest1 <- normalized_count_data$ensembl_gene_id[
+ which(normalized_count_data$hgnc_symbol == "FBP2")]
+ensembl_of_interest2 <- normalized_count_data$ensembl_gene_id[
+ which(normalized_count_data$hgnc_symbol == "MT-CO1")]
+
+volcano_data <- qlf_output_hits$table
+rownames(volcano_data) <- rownames(qlf_output_hits$table)
+volcano_data$logPValue <- -log(volcano_data$PValue,base =10)
+volcano_data$colour <- "black"
+volcano_data$colour[which(volcano_data$PValue < 0.05 & volcano_data$logFC > 0)] <- "red"
+volcano_data$colour[which(volcano_data$PValue < 0.05 & volcano_data$logFC < 0)] <- "blue"
+
+plot(
+  qlf_output_hits$table$logFC,
+  volcano_data$logPValue,
+  main = "Figure 2: Volcano Plot of Differentially Expressed Genes",
+  xlab = "log(Foldchange)",
+  ylab = "-log10(p-value)",
+  col = volcano_data$colour
+)
+
+points(volcano_data[
+  rownames(volcano_data)==ensembl_of_interest1, c(1,6)],
+  pch=2, col="green", cex=1.5)
+text(volcano_data[
+  rownames(volcano_data)==ensembl_of_interest1, c(1,6)],
+  labels="FBP2", cex= 0.7, pos=2)
+
+points(volcano_data[
+  rownames(volcano_data)==ensembl_of_interest2, c(1,6)],
+  pch=2, col="green", cex=1.5)
+text(volcano_data[
+  rownames(volcano_data)==ensembl_of_interest2, c(1,6)],
+  labels="MT-CO1", cex= 0.7, pos=2)
+
+legend(5.5, 5, legend=c("Upregulated", "Downregulated"),
+       col=c("red","blue"), pch = 1, cex=0.8)
+```
+Figure 2: Volcano Plot of Differentially Expressed Genes. Upregulated genes are shown in red, and dowregulated genes are shown in blue. All genes which are coloured either red or blue have passed the threshold p-value of 0.05. The genes FBP2 and MT-CO1 are labeled and are highlighted with green triangles.
+
+There are 554 genes which have been upregulated.
+```{r}
+length(which(qlf_output_hits$table$PValue < 0.05
+ & qlf_output_hits$table$logFC > 0))
+```
+
+There are 413 genes which have been downregulated.
+```{r}
+length(which(qlf_output_hits$table$PValue < 0.05
+ & qlf_output_hits$table$logFC < 0))
+```
+
+A heatmap can be created to view the upregulated and downregulated genes in relation to sample groups. The packages ComplexHeatmap and circlize are used to plot the heatmap [@heatmap; @circlize]. The code for creating the heatmap is refferenced from lecture 6 of BCB420 [@lecture6].
+
+```{r message=FALSE}
+library(ComplexHeatmap)
+library(circlize)
+```
+```{r}
+top_hits <- rownames(qlf_output_hits$table)[qlf_output_hits$table$PValue < 0.05]
+
+data_matrix_tophits <- t(
+ scale(t(data_matrix[which(rownames(data_matrix) 
+ %in% top_hits),])))
+
+data_matrix_tophits <- data_matrix_tophits[,
+ c(grep(colnames(data_matrix_tophits),pattern = "F"),
+ grep(colnames(data_matrix_tophits),pattern = "V"))]
+
+if(min(data_matrix_tophits) == 0){
+ heatmap_col = colorRamp2(c( 0, max(data_matrix_tophits)), 
+ c( "white", "red"))
+ } else {
+ heatmap_col = colorRamp2(c(min(data_matrix_tophits), 0, 
+ max(data_matrix_tophits)), 
+ c("blue", "white", "red"))
+ }
+
+current_heatmap <- Heatmap(as.matrix(data_matrix_tophits),
+ cluster_rows = TRUE,
+ cluster_columns = FALSE,
+ show_row_dend = TRUE,
+ show_column_dend = FALSE, 
+ col=heatmap_col,
+ show_column_names = TRUE, 
+ show_row_names = FALSE,
+ show_heatmap_legend = TRUE,
+ column_title = "Figure 3: Heatmap of Top Hits",
+ name = "Normalized\nExpression\nValue"
+ )
+
+current_heatmap
+```
+Figure 3: Heatmap of Top Hits. The heatmap displays all genes which have passed the threshold p-values of 0.05. The columns of the heatmap are the four FBP2 expressing groups and the five control groups. Upregulated genes are shown in red, and dowregulated genes are shown in blue.
+
+The heatmap shows that the protein expressing groups and the control groups cluster together based on upregulated and downregulated genes. This indicates that all samples within either the protein expressing group or the control group have similar patterns of gene expression. The induced expression of FBP2 caused gene expression which differs from the control group.
+
+
+## Thresholded over-representation analysis
+
+Create thresholded lists for upregulated and downregulated genes. The following code is refferenced from lecture 7 of BCB420 [@lecture7].
+```{r}
+# Retreive HGNC symbols.
+qlf_output_hits_hgnc <- merge(normalized_count_data[,1:2], qlf_output_hits, by.x=1, by.y = 0)
+
+qlf_output_hits_hgnc[,"rank"] <- -log(qlf_output_hits_hgnc$PValue,base =10) * sign(qlf_output_hits_hgnc$logFC)
+qlf_output_hits_hgnc <- qlf_output_hits_hgnc[order(qlf_output_hits_hgnc$rank),]
+
+upregulated_genes <- qlf_output_hits_hgnc$hgnc_symbol[
+  which(qlf_output_hits_hgnc$PValue < 0.05 
+             & qlf_output_hits_hgnc$logFC > 0)]
+downregulated_genes <- qlf_output_hits_hgnc$hgnc_symbol[
+  which(qlf_output_hits_hgnc$PValue < 0.05 
+             & qlf_output_hits_hgnc$logFC < 0)]
+
+# Save the gene lists for future use.
+write.table(x=upregulated_genes,
+            file=file.path("FBP2_upregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+
+write.table(x=downregulated_genes,
+            file=file.path("FBP2_downregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+
+write.table(x=data.frame(genename= qlf_output_hits_hgnc$hgnc_symbol,
+                         F_stat= qlf_output_hits_hgnc$rank),
+            file=file.path("FBP2_ranked_genelist.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+```
+
+The gprofiler2 package will be used for the over-representation analysis [@gprofiler2]. This method is effective since it allows access to several different data sources within R.
+```{r}
+library(gprofiler2)
+```
+```{r}
+version_info <- get_version_info(organism = "hsapiens")
+version_info$sources$REAC
+```
+Annotation data from Reactome will be used since it provides information about the functionality behind the expression genes [@reactome]. This information is useful in viewing the expression or repression of genes which would cause sarcomas. The code above indicates that the version used is from 2022. For the enrichment analysis, the background used is all genes within the filtered normalized dataset. Adding this custom background should make the results more accurate for this dataset. A threshold p-value of 0.05 is used.
+
+```{r}
+ranked_REAC <- gost(
+  qlf_output_hits_hgnc$hgnc_symbol,
+  organism = "hsapiens",
+  ordered_query = FALSE,
+  multi_query = FALSE,
+  significant = FALSE,
+  exclude_iea = FALSE,
+  measure_underrepresentation = FALSE,
+  evcodes = FALSE,
+  user_threshold = 0.05,
+  correction_method = c("fdr"),
+  domain_scope = c("custom_annotated"),
+  custom_bg = normalized_count_data$hgnc_symbol,
+  sources = c("REAC"),
+  as_short_link = FALSE
+  )
+
+# Find amount of genesets returned and find thresholds
+length(ranked_REAC$result$term_id)
+
+
+knitr::kable(ranked_REAC$result$term_name[1:10],
+             col.names = "", 
+             caption = "Table 3: Top Terms of Ranked Gene List",
+             type="html")
+```
+Table 3: Top Terms of Ranked Gene List. Over-representation analysis has been performed with the gprofiler2 package [@gprofiler2]. Annotation data is retrieved from Reactome [@reactome]. The version of the data used is from 2022. The background data used is all of genes in the dataset. The correction method used is FDR (false discovery rate) [@BH]. The threshold p-value is 0.05.
+
+There are 2263 genesets returned. The ranked gene list returns terms which are related mostly to RHO GTPases (Table 3).
+
+```{r}
+upregulated_REAC <- gost(
+  upregulated_genes,
+  organism = "hsapiens",
+  ordered_query = FALSE,
+  multi_query = FALSE,
+  significant = FALSE,
+  exclude_iea = FALSE,
+  measure_underrepresentation = FALSE,
+  evcodes = FALSE,
+  user_threshold = 0.05,
+  correction_method = c("fdr"),
+  domain_scope = c("custom_annotated"),
+  custom_bg = normalized_count_data$hgnc_symbol,
+  sources = c("REAC"),
+  as_short_link = FALSE
+  )
+
+# Find amount of genesets returned and find thresholds
+length(upregulated_REAC$result$term_id)
+
+knitr::kable(upregulated_REAC$result$term_name[1:10],
+             col.names = "", 
+             caption = "Table 4: Top Terms of Upregulated Genes",
+             type="html")
+```
+Table 4: Top Terms of Upregulated Genes. Over-representation analysis has been performed with the gprofiler2 package [@gprofiler2]. Annotation data is retrieved from Reactome [@reactome]. The version of the data used is from 2022. The background data used is all of genes in the dataset. The correction method used is FDR (false discovery rate) [@BH]. The threshold p-value is 0.05.
+
+There are 1258 genesets returned. The table of top terms of the upregulated genes has different terms compared to the ranked gene list. The terms indicates that there is a lot of upregulation of genes which aid in trafficking and transportation (Table 4).
+
+```{r}
+downregulated_REAC <- gost(
+  downregulated_genes,
+  organism = "hsapiens",
+  ordered_query = FALSE,
+  multi_query = FALSE,
+  significant = FALSE,
+  exclude_iea = FALSE,
+  measure_underrepresentation = FALSE,
+  evcodes = FALSE,
+  user_threshold = 0.05,
+  correction_method = c("fdr"),
+  domain_scope = c("custom_annotated"),
+  custom_bg = normalized_count_data$hgnc_symbol,
+  sources = c("REAC"),
+  as_short_link = FALSE
+  )
+
+# Find amount of genesets returned and find thresholds
+length(downregulated_REAC$result$term_id)
+
+knitr::kable(downregulated_REAC$result$term_name[1:10],
+             col.names = "", 
+             caption = "Table 5: Top Terms of Downregulated Genes",
+             type="html")
+```
+Table 5: Top Terms of Downregulated Genes. Over-representation analysis has been performed with the gprofiler2 package [@gprofiler2]. Annotation data is retrieved from Reactome [@reactome]. The version of the data used is from 2022. The background data used is all of genes in the dataset. The correction method used is FDR (false discovery rate) [@BH]. The threshold p-value is 0.05.
+
+There are 1154 genesets returned. The table of topterms of the downregulated genes indicates that there is a lot of downregulation of translation (Table 5).
+
+
+## Interpretation
+
+The results of this over-representation analysis support some of the results of the original paper, but these resukts also introduce new findings. The authors have determined that FBP2 decreases the transcription of the c-Myc gene and the genes which are targeted by c-Myc [@HUANGYANG2020174]. The over-representation analysis of downregulated genes shows that genes involved in translation are downregulated. These two results together suggest that FBP2 not only inhibits the transcription of certain genes, but also their translation into proteins.
+
+Findings from other publications support the obtained results from the over-representation analysis. In leukemic cells, the FBP2 protein has been shown to be involved in certain transport systems [@transport]. Also, the FBP2 protein itself has an elaborate trafficking system within the nucleus [@translation]. These findings support the result that upregulated genes are involved with transport. We may hypothesize that the upregulation of transport and trafficking by FBP2 may also inhibit sarcoma progression. In support of the results obtained with the ranked gene list, the expression of Rho GTPase is often affected by cancers [@gtpase]. The liposarcoma cells used therefore likely have altered expression levels of genes involved with Rho GTPases. We may also hypothesize FBP2 may restore some of the GTPase expression levels since some of the top terms of the upregulated genes are involved in the GTPase cycle (Table 4).
+
+
+## References
+
+---
+nocite: '@*'
+---
