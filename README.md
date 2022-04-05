@@ -8,3 +8,5 @@ Assignment 1 Journal Entry: https://github.com/bcb420-2022/Emiliya_Stolyarova/wi
 Assignment 2 html file: https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/A2_EmiliyaStolyarova.html
 
 Assignment 2 rmd file: https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/A2_EmiliyaStolyarova.Rmd
+
+Assignment 3 rmd file: https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/A3_EmiliyaStolyarova.Rmd
