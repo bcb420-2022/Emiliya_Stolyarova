@@ -10,3 +10,5 @@ Assignment 2 html file: https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/m
 Assignment 2 rmd file: https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/A2_EmiliyaStolyarova.Rmd
 
 Assignment 3 rmd file: https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/A3_EmiliyaStolyarova.Rmd
+
+Assignment 3 html file: https://github.com/bcb420-2022/Emiliya_Stolyarova/blob/main/A3_EmiliyaStolyarova.zip
