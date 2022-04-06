@@ -1,0 +1,433 @@
+---
+title: "Assignment 3: Non-thresholded Gene set Enrichment Analysis and Network Analysis of RNA-sequencing Dataset"
+output: 
+  html_notebook:
+    toc: true
+    toc_depth: 2
+    fig_caption: yes
+bibliography: Assignment3references.bib
+csl: apa.csl
+---
+
+Emiliya Stolyarova
+
+[Journal entry for Assignment 3](https://github.com/bcb420-2022/Emiliya_Stolyarova/wiki/Journal-Entry:-Assignment-3)
+
+The APA Citation Style Language is retrieved from the [Zotero Style Repository](https://www.zotero.org/styles/apa). The BibTeX reference file is available [here](https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/Assignment3references.bib).
+```{r message=FALSE}
+if (!file.exists('Assignment3references.bib')){
+bib <- read.delim("https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/Assignment3references.bib")
+
+write.table(x=bib,
+            file=file.path("Assignment3references.bib"),
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+}
+```
+
+Packages used are BiocManager [@BiocManager], GSA [@GSA], RCurl [@RCurl], VennDiagram [@venn], grid [@grid], ComplexHeatmap [@heatmap], circlize [@circlize], and knitr [@knitr1;@knitr2;@knitr3].
+```{r, message=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("GSA", quietly = TRUE)){
+  install.packages("GSA")
+}
+
+if (!requireNamespace("VennDiagram", quietly = TRUE)){
+  install.packages("VennDiagram")
+}
+
+if (!requireNamespace("grid", quietly = TRUE)){
+  install.packages("grid")
+}
+
+if (!requireNamespace("ComplexHeatmap", quietly = TRUE)){
+  BiocManager::install("ComplexHeatmap")
+}
+
+if (!requireNamespace("circlize", quietly = TRUE)){
+  install.packages("circlize")
+}
+
+if (!requireNamespace("knitr", quietly = TRUE)){
+  install.packages('knitr', dependencies = TRUE)
+}
+
+```
+```{r, message=FALSE}
+tryCatch(expr = { library("RCurl")}, 
+         error = function(e) {  install.packages("RCurl")}, 
+         finally = library("RCurl"))
+```
+
+```{r}
+data_dir <- getwd()
+```
+
+## Introduction
+
+The RNA-seq dataset developed by Huangyang et al. in their research article titled “Fructose-1,6-Bisphosphatase 2 Inhibits Sarcoma Progression by Restraining Mitochondrial Biogenesis”, aims to determine the effect of the expression of the FBP2 protein on soft tissue sarcoma progression [-@HUANGYANG2020174]. The authors have hypothesized that the expression of the FBP2 protein should inhibit sarcoma progression [@HUANGYANG2020174]. This dataset is associated with the GSE identifier GSE137755. The dataset has a control group of human liposarcoma cells and a group of human liposarcoma cells with the induced expression of FBP2 [@HUANGYANG2020174]. Previously, the data from this dataset has been filtered [@anders2013count], and normalized [@robinson2010scaling]. Furthermore, differentially expressed genes have been determined, and a thresholded over-representation analysis has been performed [@gprofiler2]. 
+
+The aim of this report is to perform a non-thresholded gene set enrichment analysis and to visualize the results in cytoscape. 
+
+
+## Non-thresholded Gene set Enrichment Analysis
+
+The Non-thresholded Gene set Enrichment Analysis is performed with GSEA [@GSEA1;@GSEA2], version 4.1.0. Code is referenced from lecture 10 of BCB420 [@lecture10], and from the "Enrichment Map Analysis Pipeline" [@Code].
+
+The gene sets database used is retrieved from the [baderlab geneset](http://download.baderlab.org/EM_Genesets/) collection. The genesets retrieved are from March 01, 2022. They contain data from GO biological process and no IEA [@GO1;@GO2].
+```{r, message=FALSE}
+gmt_url = "http://download.baderlab.org/EM_Genesets/March_01_2022/Human/symbol/"
+
+filenames = getURL(gmt_url)
+tc = textConnection(filenames)
+contents = readLines(tc)
+close(tc)
+
+rx = gregexpr("(?<=<a href=\")(.*.GOBP_AllPathways_no_GO_iea.*.)(.gmt)(?=\">)", contents,
+    perl = TRUE)
+gmt_file = unlist(regmatches(contents, rx))
+dest_gmt_file <- file.path(data_dir, gmt_file)
+download.file(paste(gmt_url, gmt_file, sep = ""), destfile = dest_gmt_file)
+```
+
+This analysis will be performed with the previously created ranked gene list which is not thresholded. The genes which do not have a hgnc symbol associated with them have been removed from the ranked list. Additionaly, the geneset size has been set to be from 15 genes to 200 genes. This parameter has been set to limit very large genesets which would not provide information on processes which are relevant in this analysis. It has also been set to limit very small genesets which would likely not provide biologically relevant information.
+
+```{r}
+gsea_jar <- "/home/rstudio/GSEA_4.1.0/gsea-cli.sh"
+dest_gmt_file <-  file.path(data_dir,
+ "Human_GOBP_AllPathways_no_GO_iea_March_01_2022_symbol.gmt")
+current_rank_file <- "FBP2_ranked_genelist_noNA_noBlanc.rnk"
+analysis_name <- "my_analysis1"
+working_dir <- data_dir
+gsea_directory <- "" 
+```
+
+```{r, message=FALSE}
+# We have Java 11
+command <- paste("",gsea_jar,  "GSEAPreRanked -gmx ", dest_gmt_file, "-rnk" ,file.path(working_dir,current_rank_file ), "-collapse false -nperm 1000 -scoring_scheme weighted -rpt_label ",analysis_name,"  -plot_top_x 20 -rnd_seed 12345  -set_max 200 -set_min 15 -zip_report false -out" ,working_dir, " > gsea_output.txt",sep=" ")
+```
+```{r}
+system(command)
+```
+
+```{r}
+# Retrieve results for downregulated genes.
+enr_neg <-
+  read.table(file.path(data_dir, "gsea_report_for_na_neg_1648577753166.tsv"),
+             header = TRUE, sep = "\t", quote="\"", 
+             stringsAsFactors = FALSE,row.names=1)
+ 
+# Retrieve results for upregulated genes.
+enr_pos <-
+  read.table(file.path(data_dir, "gsea_report_for_na_pos_1648577753166.tsv"),
+             header = TRUE, sep = "\t", quote="\"", 
+             stringsAsFactors = FALSE,row.names=1)
+```
+
+```{r}
+cat("GSEA Results for Negatively Regulated Genes",
+    "\n Top geneset:", enr_neg[1,]$GS.br..follow.link.to.MSigDB, 
+    "\n  p value:", enr_neg[1,]$NOM.p.val,
+    "\n  Enrichment Score:", enr_neg[1,]$ES,
+    "\n  Normailized Enrichment Score:", enr_neg[1,]$NES,
+    "\n  FDR:", enr_neg[1,]$FDR.q.val)
+```
+
+```{r}
+cat("GSEA Results for Positively Regulated Genes",
+    "\n Top geneset:", enr_pos[1,]$GS.br..follow.link.to.MSigDB, 
+    "\n  p value:", enr_pos[1,]$NOM.p.val,
+    "\n  Enrichment Score:", enr_pos[1,]$ES,
+    "\n  Normailized Enrichment Score:", enr_pos[1,]$NES,
+    "\n  FDR:", enr_pos[1,]$FDR.q.val)
+```
+
+The top geneset of the downregulated genes has a significantly lower FDR value than that of the top geneset of the positively regulated gene. This indicates that the genesets associated with the upregulated genes are more likely to be false positives. This indicates that the FBP2 expression of has caused a more significant downregulation of genes than upregulation of genes.
+
+# Visualize the Gene set Enrichment Analysis in Cytoscape
+
+For the creation of the enrichment map, Cytoscape version 3.9.1 is used [@cytoscape], with the EnrichmentMap app [@enrichment]. The enrichment map is created with the ranked gene list, enrichment of upregulated genes, and enrichment of downregulated genes obtained from GSEA. Additionally, the GMT file containing genesets used in the non-thresholded gene set enrichment analysis is also used.
+
+### Creating an enrichment map
+
+#### **Figure 1. Enrichment map of non-thresholded gene set enrichment analysis with no manual layout**
+
+![Figure 1. Enrichment map of non-thresholded gene set enrichment analysis with no manual layout. Genesets assciated with negatively regulated gene are in blue and genesets associated with positively regulated gene are in red. This enrichment map has been created with an FDR Q-value cutoff of 0.05 and a Jaccard Overlap combined coefficient of 0.375 with a constant of 0.5. Genes have not been filtered by expressions](https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/figures/GSEA_figure1.png)
+
+In the enrichment map indicated in Figure 1, the Node Table indicates that there are 89 nodes and the Edge Table indicates that there are 675 edges.
+
+Since all of the genesets disaplyed at an FDR of 0.05 are genesets for negatively regulated genes, FBP2 is involved more in the downregulation rather than the upregulation of genes. 
+
+### Annotating the network
+
+All annotations have been completed using AutoAnnotate [@autoannotate]. The following automatic parameters have been specified: A maximum of three words per label, a minimum word occurance of one, an adjancent word bonus of eight, the WordCloud algorithm, and the MCL Cluster algorithm. Lables are created based on the geneset descriptions. The annotation labels have afterwards been manually adjusted to better represent the genesets of each cluster.
+
+#### **Figure 2. Annotated enrichment map of non-thresholded gene set enrichment analysis**
+
+![Figure 2. Annotated enrichment map of non-thresholded gene set enrichment analysis. This network has been created using the enrichment map displayed in Figure 1. Genesets assciated with negatively regulated gene are in blue. The FDR has been adjusted to 0.01. There are no genesets associated with positively regulated genes which pass the FDR threshold.](https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/figures/GSEA_figure2.png)
+
+
+### Publication ready figure
+
+#### **Figure 3. Annotated enrichment map of non-thresholded gene set enrichment analysis indicating genesets associated with MT-CO1**
+
+![Figure 3. Enrichment map of non-thresholded gene set enrichment analysis. This network has been created using the enrichment map displayed in Figure 1. Genesets assciated with negatively regulated gene are in blue. There are no genesets associated with positively regulated gene are displayed in this figure. Edges which are associated with the MT-CO1 gene have been highlighted in red, and nodes associated with MT-CO1 have been highlighted with a yellow rim. The FDR is set to 0.05.](https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/figures/GSEA_figure3.png)
+
+In the previous analysis of the upregulated genes and dowregulated genes, the gene MT-CO1 has been found to be downregulted. This gene is a mitochondrial gene associated with mitochondrial biogenesis [@HUANGYANG2020174]. Huangyang et al., the authors of the paper associated with the FBP2 RNA-seq dataset, have determined that the upregulation of FBP2 causes the downregulation of of mitochondrial genes such as MT-CO1 [-@HUANGYANG2020174]. In support of this finding by the authors of the original publication, this enrichment map shows that MT-CO1 is being downregulated and that this gene participates in many genesets associated with the electron transport chain which takes place in the mitochondria.
+
+### Collapsed network 
+
+#### **Figure 4. Theme network of non-thresholded gene set enrichment analysis**
+
+![Figure 4. Theme network of non-thresholded gene set enrichment analysis. This network consists of the collapsed annotated network from Figure 2. This network has been created using the enrichment map displayed in Figure 1. Genesets assciated with negatively regulated gene are in blue. The FDR has been adjusted to 0.01. There are no genesets associated with positively regulated genes which pass the FDR threshold.](https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/figures/GSEA_figure4.png)
+
+Previously, in thresholded over-representation analysis with annotation data from Reactome [@reactome], the topterms of the downregulated genes indicated a downregulation of translation. In the theme network displayed in Figure 4, in addition to a downregulation of translation, major themes include DNA synthesis, DNA replication, and the electron transport chain among others. Huangyang et al. have found similar themed genesets in their analysis [-@HUANGYANG2020174].
+
+An interesting theme included in Figure 4 is the negative regulation of cell adhension. This is a novel theme which fits the model since cancers are known to disrupt cell adhesion [@adhesion]. This theme is shown to be downregulated indicating that the expression of FBP2 is restoring cell adhesion by repressing factors associated with the repression of cell adhesion. 
+
+
+# Dark matter analysis
+
+Some genes may not be annotated to any genesets and may therefore not be present in the previously completed non-thresholded geneset enrichment analysis. These genes may still be significantly expressed in the RNA-sequencing dataset, and therefore these genes should not be overlooked. 
+
+The GSA package is used for this analysis [@GSA]. Code is refferenced from Lecture 12 of BCB420 [@lecture12].
+```{r}
+library(GSA)
+```
+
+```{r, message=FALSE}
+# Retrieve the genesets
+gmt_file <- file.path(data_dir,
+ "Human_GOBP_AllPathways_no_GO_iea_March_01_2022_symbol.gmt")
+capture.output(genesets<-
+GSA.read.gmt(gmt_file),file="gsa_load.out")
+names(genesets$genesets) <- genesets$geneset.names
+```
+
+```{r}
+# Retrieve the original expression
+expression <- read.delim("https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/Assignment2Folder/normalized_count_data.txt", sep = " ")
+
+# Retrieve the gene ranks
+ranks <- read.table(file.path(data_dir,
+                    "FBP2_ranked_genelist_noNA_noBlanc.rnk"),
+                    header = TRUE, sep = "\t", quote="\"", 
+                    stringsAsFactors = FALSE)
+
+# We nust also use the previously retrieved GSEA results
+```
+
+```{r}
+# Retrieve all genesets from the GSEA results
+all_enr_genesets<- c(rownames(enr_neg), rownames(enr_pos))
+
+genes_enr_gs <- c()
+for(i in 1:length(all_enr_genesets)){
+  current_geneset <-
+    unlist(genesets$genesets[which(genesets$geneset.names %in% all_enr_genesets[i])])
+  genes_enr_gs <- union(genes_enr_gs, current_geneset)
+}
+
+# Set a FDR significance threshold of 0.001
+FDR_threshold <- 0.001
+
+all_sig_enr_genesets<- c(rownames(enr_neg)[
+  which(enr_neg[,"FDR.q.val"]<=FDR_threshold)],
+  rownames(enr_pos)[which(enr_pos[,"FDR.q.val"]<=FDR_threshold)])
+
+genes_sig_enr_gs <- c()
+
+for(i in 1:length(all_sig_enr_genesets)){
+ current_geneset <- unlist(genesets$genesets[
+ which(genesets$geneset.names %in% all_sig_enr_genesets[i])])
+ genes_sig_enr_gs <- union(genes_sig_enr_gs, current_geneset)
+}
+
+# Get all genesets
+genes_all_gs <- unique(unlist(genesets$genesets))
+```
+
+```{r}
+library(VennDiagram)
+library(grid)
+
+# Create a Venn Diagram of the three groups of genes.
+A <- genes_all_gs
+B <- genes_enr_gs
+C <- expression[,2]
+
+venn.plot <- draw.triple.venn( area1=length(A), area2=length(B), area3 =
+length(C),
+ n12 = length(intersect(A,B)), n13=length(intersect(A,C)),
+ n23 = length(intersect(B,C)),
+ n123 = length(intersect(A,intersect(B,C))),
+ category = c("all genesets","all enrichment
+results","expression"),
+ fill = c("red","green","blue"),
+ cat.col = c("darkred","green","darkblue"),
+ind = FALSE
+)
+
+# The resulting venn diagram has been previously saved as a PNG image using the "grid" package (R Core Team, 2021).
+```
+
+
+
+#### **Figure 5. Venn Diagram of genes present in the expression dataset, genesets, and enrichment results**
+![Figure 5. Venn Diagram of genes present in the expression dataset, genesets, and enrichment results. Genes in the expression dataset in blue. Genes in the genesets are in red. Genes in the enrichment result genesets are in green](https://github.com/bcb420-2022/Emiliya_Stolyarova/raw/main/figures/venn1.png)
+
+All genes are present in the expression dataset, fewer genes are present in the genesets, and the fewest amount of genes is present in the genesets of the enrichment results.
+
+First, we can find the genes which are not annotated in the enrichment analysis only.
+```{r}
+# Find unique genes among the expression data and the genes within all the genesets.
+not_er <- unique(c(expression[,2], genes_all_gs))
+
+# Find which genes which are not in the genesets returned from the enrichment analysis.
+genes_no_annotation1 <- setdiff(not_er, genes_enr_gs)
+
+# Retrieve ranks for genes
+ranked_gene_no_annotation1 <- ranks[which(ranks[,1]
+ %in% genes_no_annotation1),]
+
+colnames(ranked_gene_no_annotation1) <- c("Name", "Rank")
+
+# Display top 3 genes and their rank.
+knitr::kable(ranked_gene_no_annotation1[1:3,],
+             caption = "Table 1: Top three ranked genes which are not present in the genesets returned from the enrichment analysis.",
+             type="html")
+```
+Table 1. Table displaying the top three ranked genes which are not present in the genesets returned from the enrichment analysis. 
+
+We can also find the genes which have no annotation at all.
+```{r}
+# Find which genes which are not in any of the genesets used in the enrichment analysis.
+genes_no_annotation2 <- setdiff(expression[,2], genes_all_gs)
+
+# Find ranks of these genes.
+ranked_gene_no_annotation2 <- ranks[which(ranks[,1]
+ %in% genes_no_annotation2),]
+
+colnames(ranked_gene_no_annotation2) <- c("Name", "Rank")
+
+# Display top 3 genes and their rank.
+knitr::kable(ranked_gene_no_annotation2[1:3,],
+             caption = "Table 2: Top three ranked genes which are not present in any of the genesets used in the enrichment analysis.",
+             type="html")
+```
+Table 2.Table displaying the top 3 genes which are not present in any of the genesets used in the enrichment analysis.
+
+In both the genes that are not annotated to any of the pathways returned in the enrichment analysis and the genes that are not annotated to any pathways, the most significant ranked gene is HECW2-AS1. This gene codes for long non-coding RNA [@HEC;@ensembl]. Recent publications have shown that long non-coding RNAs have roles in cancers and tumour progression [@RNA1; @lncrna].
+
+```{r, message=FALSE}
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r}
+# Retrieve normalized expression data
+normalized_count_data <- read.delim("https://raw.githubusercontent.com/bcb420-2022/Emiliya_Stolyarova/main/Assignment2Folder/normalized_count_data.txt", sep = " ")
+
+# Create data matrix to be used for the heatmaps
+data_matrix <- 
+  normalized_count_data[,3:ncol(normalized_count_data)]
+rownames(data_matrix) <- 
+  normalized_count_data$ensembl_gene_id
+colnames(data_matrix) <- 
+  colnames(normalized_count_data[,3:ncol(normalized_count_data)])
+```
+
+```{r}
+top_hits <- ranked_gene_no_annotation2$Name[which(ranked_gene_no_annotation2$Rank > (-log10(0.05)) | ranked_gene_no_annotation2$Rank < log10(0.05))]
+
+top_hits <- normalized_count_data$ensembl_gene_id[which(normalized_count_data$hgnc_symbol %in% top_hits)]
+
+data_matrix_tophits <- t(
+ scale(t(data_matrix[which(rownames(data_matrix) 
+ %in% top_hits),])))
+
+data_matrix_tophits <- data_matrix_tophits[,
+ c(grep(colnames(data_matrix_tophits),pattern = "F"),
+ grep(colnames(data_matrix_tophits),pattern = "V"))]
+
+if(min(data_matrix_tophits) == 0){
+ heatmap_col = colorRamp2(c( 0, max(data_matrix_tophits)), 
+ c( "white", "red"))
+ } else {
+ heatmap_col = colorRamp2(c(min(data_matrix_tophits), 0, 
+ max(data_matrix_tophits)), 
+ c("blue", "white", "red"))
+ }
+
+current_heatmap <- Heatmap(as.matrix(data_matrix_tophits),
+ cluster_rows = TRUE,
+ cluster_columns = FALSE,
+ show_row_dend = TRUE,
+ show_column_dend = FALSE, 
+ col=heatmap_col,
+ show_column_names = TRUE, 
+ show_row_names = FALSE,
+ show_heatmap_legend = TRUE,
+ column_title = "Figure 6: Heatmap of significant genes that are\nnot annotated to any pathways in entire\nset of pathways used for the analysis.",
+ name = "Normalized\nExpression\nValue"
+ )
+
+current_heatmap
+```
+Figure 6: Heatmap of significant genes that are not annotated to any pathways in entire set of pathways used for the analysis. The columns of the heatmap indicate the five control groups and the four FBP2 protein expressing groups. Upregulated genes are shown in red, and dowregulated genes are shown in blue.
+
+```{r}
+top_hits <- ranked_gene_no_annotation1$Name[which(ranked_gene_no_annotation1$Rank > (-log10(0.05)) | ranked_gene_no_annotation1$Rank < log10(0.05))]
+
+top_hits <- normalized_count_data$ensembl_gene_id[which(normalized_count_data$hgnc_symbol %in% top_hits)]
+
+data_matrix_tophits <- t(
+ scale(t(data_matrix[which(rownames(data_matrix) 
+ %in% top_hits),])))
+
+data_matrix_tophits <- data_matrix_tophits[,
+ c(grep(colnames(data_matrix_tophits),pattern = "F"),
+ grep(colnames(data_matrix_tophits),pattern = "V"))]
+
+if(min(data_matrix_tophits) == 0){
+ heatmap_col = colorRamp2(c( 0, max(data_matrix_tophits)), 
+ c( "white", "red"))
+ } else {
+ heatmap_col = colorRamp2(c(min(data_matrix_tophits), 0, 
+ max(data_matrix_tophits)), 
+ c("blue", "white", "red"))
+ }
+
+current_heatmap <- Heatmap(as.matrix(data_matrix_tophits),
+ cluster_rows = TRUE,
+ cluster_columns = FALSE,
+ show_row_dend = TRUE,
+ show_column_dend = FALSE, 
+ col=heatmap_col,
+ show_column_names = TRUE, 
+ show_row_names = FALSE,
+ show_heatmap_legend = TRUE,
+ column_title = "Figure 7: Heatmap of significant genes which are\nnot annotated to any pathways returned in\nthe enrichment analysis",
+ name = "Normalized\nExpression\nValue"
+ )
+
+current_heatmap
+```
+Figure 7: Heatmap of significant genes which are not annotated to any pathways returned in the enrichment analysis. The columns of the heatmap indicate the five control groups and the four FBP2 protein expressing groups. Upregulated genes are shown in red, and dowregulated genes are shown in blue.
+
+The heatmaps shown in Figures 6 and 7 indicate that there is a significant amount of upregulation and downregulation among these genes. Therefore, these genes are worth being investigated.
+
+# Interpretation
+
+As discussed previously when interpretting the collapsed theme network in Figure 4 and when discussing the repression of the gene MT-CO1 in Figure 3, the results of this analysis do indeed support the results from the previous thresholded over-representation analysis and the results of the original publication by Huangyang et al. [-@HUANGYANG2020174]. In the previous thresholded over-representation analysis, a downregulation of translation was determined.
+In Figure 4, the results from this non-thresholded gene set enrichment analysis have included the downregulation of translation, but also provided a greater amount of biological themes than the previous thresholded over-representation analysis. The data displayed in Figure 3 supports the original publication since it shows that the mitochondrial gene MT-CO1 is being downregulated [@HUANGYANG2020174]. Furthermore, Figure 3 shows that MT-CO1 participates in the electron transport chain.
+
+As described in the Dark Matter analysis, the HECW2-AS1 gene, which is associated with long non-coding RNA [@HEC;@ensembl], has been identified to have significant downregulation. In other publications it has been found that long non-coding RNA can be indicators of cancer progression [@RNA1; @lncrna]. It would therefore be valuable to study whether this downregulation of the HECW2-AS1 gene is a result of the FBP2 protein targeting the repression of long non-coding RNA transcription. Furthermore, in the theme network in Figure 4, one of the downregulated themes has been identified to be the downregulation of cell adhesion. Therefore the FBP2 protein may be a factor in restoring cell adhesion by inhibiting repressive proteins. This prediction fits the model since other publications have established that the loss of cell adhesion is found in cancers [@adhesion]. If FBP2 inhibits sarcoma progression [@HUANGYANG2020174], then the introduction of FBP2 in sarcoma cells is likely to restore cell adhesion.
+
+# References
+
+---
+nocite: '@*'
+---
